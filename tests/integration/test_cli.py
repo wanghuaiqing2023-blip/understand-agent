@@ -49,7 +49,7 @@ class CliIntegrationTest(TestCase):
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["run_id"], "integration-tools")
         names = [tool["name"] for tool in payload["tools"]]
-        self.assertEqual(names, ["list_files", "read_file", "search_text"])
+        self.assertEqual(names, ["list_files", "read_file", "search_text", "shell"])
         self.assert_trace_hint(completed, "integration-tools")
         events = self.read_trace("integration-tools")
         self.assertEqual(
@@ -146,3 +146,33 @@ class CliIntegrationTest(TestCase):
         payload = json.loads(completed.stdout)
         self.assertFalse(payload["ok"])
         self.assertIn("trace log not found", payload["error"])
+
+    def test_run_without_api_key_returns_json_error(self) -> None:
+        env_key = os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            completed = self.run_cli("run", "Say hello")
+        finally:
+            if env_key is not None:
+                os.environ["OPENAI_API_KEY"] = env_key
+
+        self.assertEqual(completed.returncode, 1)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["run_id"], "integration-run-Say hello")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["model_calls"], 0)
+        self.assertEqual(payload["tool_calls"], 0)
+        self.assertEqual(payload["error"], "OPENAI_API_KEY is not set")
+        self.assert_trace_hint(completed, "integration-run-Say hello")
+
+    def test_run_budget_options_are_accepted(self) -> None:
+        env_key = os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            completed = self.run_cli("run", "Say hello", "--max-model-calls", "4", "--max-tool-calls", "4")
+        finally:
+            if env_key is not None:
+                os.environ["OPENAI_API_KEY"] = env_key
+
+        self.assertEqual(completed.returncode, 1)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["error"], "OPENAI_API_KEY is not set")

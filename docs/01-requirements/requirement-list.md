@@ -56,6 +56,9 @@
 | R-014 | 工具调用失败归因证据 | done | 记录工具请求、开始、结束、耗时、完整结果和原始错误 |
 | R-015 | 执行结束后暴露 trace 日志位置 | done | CLI 在 stdout 输出 `run_id`，并在 stderr 输出本次 trace 文件路径 |
 | R-016 | 最近执行日志索引与查询命令 | done | 已提供 `index.jsonl`、`logs list` 和 `logs show <run_id>` |
+| R-017 | GPT-5.5 Agent Loop | done | 新增 `run` 命令，使用 OpenAI Responses API、本地 stateless context、工具行动和观察回填循环 |
+| R-018 | Codex 风格 context 拼接 | done | 请求分为 `instructions / tools / input`，初始 input 注入权限、AGENTS、环境和用户任务，历史保持 append-only |
+| R-019 | 主机 shell 工具 | done | 将 `shell` 暴露为模型可调用 function tool，主机 PowerShell 执行，执行前人工确认 |
 
 ## v0.2：任务工作流
 
@@ -66,6 +69,7 @@
 | R-103 | 操作日志 | done | v0.2-alpha 已实现本地 JSONL 执行轨迹 |
 | R-104 | 错误恢复 | idea | 失败后能解释和重试 |
 | R-105 | 简单记忆文件 | idea | 先用本地文件沉淀长期信息 |
+| R-106 | 模型工具循环停止条件 | done | 无 tool action 且有 final answer 时完成；预算耗尽、API 失败或未知 tool action 时失败 |
 
 ## v0.3：工程能力
 

@@ -14,11 +14,18 @@ class ToolContext:
     """Runtime context shared by local tools."""
 
     workspace_root: Path
+    project_root: Path | None = None
+    shell_default_workdir: Path | None = None
+    shell_approver: Callable[[dict[str, Any]], bool] | None = None
     run_id: str | None = None
     logger: ExecutionLogger | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "workspace_root", self.workspace_root.resolve())
+        project_root = self.project_root or self.workspace_root
+        shell_default_workdir = self.shell_default_workdir or self.workspace_root
+        object.__setattr__(self, "project_root", project_root.resolve())
+        object.__setattr__(self, "shell_default_workdir", shell_default_workdir.resolve())
 
 
 @dataclass(frozen=True)

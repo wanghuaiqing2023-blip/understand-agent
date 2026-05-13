@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from understand_agent.agent_loop import AgentLoop, AgentRunConfig
+from understand_agent.context import ContextBuilder
+from understand_agent.model import OpenAIResponsesClient
 from understand_agent.registry import ToolContext, ToolResult
 from understand_agent.tools import build_default_registry
 from understand_agent.trace import ExecutionLogger, load_log_index, load_trace_events, new_run_id
@@ -31,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     context = ToolContext(
         workspace_root=workspace_root,
+        project_root=workspace_root,
+        shell_default_workdir=workspace_root,
         run_id=logger.run_id if logger is not None else None,
         logger=logger,
     )
@@ -62,6 +67,13 @@ def main(argv: list[str] | None = None) -> int:
         _record_run_finished(logger, exit_code, raw_argv, workspace_root)
         return exit_code
 
+    if parsed.command == "run":
+        result = _handle_run_command(parsed, registry, logger)
+        _print_json(_with_run_id(result.to_dict(), logger))
+        exit_code = 0 if result.ok else 1
+        _record_run_finished(logger, exit_code, raw_argv, workspace_root)
+        return exit_code
+
     if parsed.command == "logs":
         return _handle_logs_command(parsed, workspace_root)
 
@@ -79,6 +91,11 @@ def _build_parser() -> argparse.ArgumentParser:
     call_parser = subcommands.add_parser("call", help="call a registered tool")
     call_parser.add_argument("tool_name")
     call_parser.add_argument("tool_args", nargs="*", help="tool args in key=value form")
+
+    run_parser = subcommands.add_parser("run", help="run an agent loop for a task")
+    run_parser.add_argument("task")
+    run_parser.add_argument("--max-model-calls", type=int, default=8)
+    run_parser.add_argument("--max-tool-calls", type=int, default=8)
 
     logs_parser = subcommands.add_parser("logs", help="list or show execution logs")
     logs_subcommands = logs_parser.add_subparsers(dest="logs_command")
@@ -150,6 +167,39 @@ def _handle_logs_command(parsed: argparse.Namespace, workspace_root: Path) -> in
 
     _print_json(ToolResult.failure(f"unknown logs command: {parsed.logs_command}").to_dict())
     return 2
+
+
+def _handle_run_command(
+    parsed: argparse.Namespace,
+    registry,
+    logger: ExecutionLogger | None,
+):
+    project_root = Path.cwd().resolve()
+    home_root = Path.home().resolve()
+    context = ToolContext(
+        workspace_root=home_root,
+        project_root=project_root,
+        shell_default_workdir=project_root,
+        run_id=logger.run_id if logger is not None else None,
+        logger=logger,
+    )
+    builder = ContextBuilder(
+        workspace_root=home_root,
+        project_root=project_root,
+        shell_default_workdir=project_root,
+        cwd=project_root,
+    )
+    loop = AgentLoop(
+        model_client=OpenAIResponsesClient(),
+        registry=registry,
+        context_builder=builder,
+        tool_context=context,
+        config=AgentRunConfig(
+            max_model_calls=parsed.max_model_calls,
+            max_tool_calls=parsed.max_tool_calls,
+        ),
+    )
+    return loop.run(parsed.task)
 
 
 def _active_log_dir(workspace_root: Path) -> Path:
