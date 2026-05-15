@@ -62,6 +62,7 @@
 | R-020 | 可持续 session 上下文 | done | 默认 CLI 创建交互式 session；裸 prompt 会作为第一轮输入启动 session；完整 `input_items` 保存到 HOME 下 `.understand-agent/sessions` |
 | R-021 | Codex 风格 resume | done | 支持 `resume`、`resume --last`、`resume --all` 和 `resume <SESSION_ID>` |
 | R-022 | Session 归档与恢复 | done | 经用户明确允许新增 `archive <SESSION_ID>` 和 `unarchive <ARCHIVE_FILE_NAME>`，归档为 `<SESSION_ID>.gzip` 单文件并支持反悔恢复 |
+| R-023 | Session context 可观察性 | done | 交互式 session 支持 `/context`，打印当前已保存上下文重建出的完整 `instructions / tools / input` 请求 |
 
 ## v0.2：任务工作流
 

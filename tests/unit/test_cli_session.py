@@ -1,4 +1,5 @@
 import io
+import json
 import os
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -7,9 +8,10 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from understand_agent.agent_loop import AgentRunResult
-from understand_agent.cli import _run_session_turn, _trace_display_path
+from understand_agent.cli import _run_session_turn, _session_repl, _trace_display_path
 from understand_agent.registry import ToolRegistry
 from understand_agent.session import SessionStore
+from understand_agent.tools import build_default_registry
 from understand_agent.trace import ExecutionLogger
 
 
@@ -55,6 +57,35 @@ class CliSessionTest(TestCase):
         self.assertEqual(updated.turns[0].trace_path, expected_trace)
         self.assertEqual(updated.turns[0].final_answer, "saved")
         self.assertEqual(store.load("session-success-turn").turns[0].trace_path, expected_trace)
+
+    def test_context_command_prints_request_without_running_or_saving_turn(self) -> None:
+        temp_root = ROOT / ".understand-agent" / "test-tmp" / uuid4().hex
+        store = SessionStore(temp_root / "sessions")
+        input_items = [_message("developer", "rules")]
+        record = store.create(
+            project_root=ROOT,
+            workspace_root=ROOT.parent,
+            shell_default_workdir=ROOT,
+            input_items=input_items,
+            session_id="session-context-command",
+        )
+
+        stdout = io.StringIO()
+        with patch("builtins.input", side_effect=["/context", "/exit"]):
+            with patch("understand_agent.cli._run_session_turn") as run_turn:
+                with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                    exit_code = _session_repl(record, store, build_default_registry())
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(list(payload), ["instructions", "tools", "input"])
+        self.assertIn("local coding and research agent", payload["instructions"])
+        self.assertEqual([tool["name"] for tool in payload["tools"]], ["shell"])
+        self.assertEqual(payload["input"], input_items)
+        run_turn.assert_not_called()
+        loaded = store.load("session-context-command")
+        self.assertEqual(loaded.input_items, input_items)
+        self.assertEqual(loaded.turns, [])
 
 
 class _SuccessfulLoop:

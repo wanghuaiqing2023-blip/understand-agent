@@ -300,8 +300,20 @@ def _session_repl(record: SessionRecord, store: SessionStore, registry) -> int:
             continue
         if text in {"/exit", "/quit"}:
             return 0
+        if text == "/context":
+            _print_json(_session_context_payload(current, registry))
+            continue
 
         current = _run_session_turn(current, store, registry, user_input)
+
+
+def _session_context_payload(record: SessionRecord, registry) -> dict[str, Any]:
+    builder = _build_context_builder(
+        project_root=Path(record.project_root),
+        workspace_root=Path(record.workspace_root),
+        shell_default_workdir=Path(record.shell_default_workdir),
+    )
+    return builder.build_request_from_input(record.input_items, registry).to_dict()
 
 
 def _run_session_turn(record: SessionRecord, store: SessionStore, registry, user_input: str) -> SessionRecord:

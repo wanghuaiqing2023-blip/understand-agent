@@ -52,6 +52,18 @@ This preserves the visible context needed for follow-up questions and tool-choic
 
 A session does not expose hidden model reasoning. It only lets the model explain prior behavior from visible history: user requests, tool calls, observations, and assistant messages.
 
+## Local Inspection
+
+Interactive sessions support a local `/context` command. It prints the complete JSON request shape rebuilt from the currently saved session context:
+
+```text
+instructions
+tools
+input
+```
+
+This command does not call the model, does not append a user turn, and does not modify the session file. It exists so the project can inspect what visible context would be sent to the model.
+
 ## Archive
 
 Archiving a session moves all session-owned information out of the active stores and into one reversible gzip archive file.

@@ -43,6 +43,8 @@ python -m understand_agent unarchive <ARCHIVE_FILE_NAME>
 
 `python -m understand_agent "<task>"` starts a new interactive session, uses `<task>` as the first user turn, then keeps the session open for follow-up questions.
 
+Inside an interactive session, `/context` prints the current saved context rebuilt as the complete `instructions / tools / input` request. It is a local inspection command and does not call the model or create a turn.
+
 `exec` is the one-shot command. It replaces the removed `run` command and does not create or update a session.
 
 `resume` reads sessions from the user's HOME directory:

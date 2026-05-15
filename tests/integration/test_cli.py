@@ -63,6 +63,7 @@ class CliIntegrationTest(TestCase):
         self.assertIn("archive", completed.stdout)
         self.assertIn("unarchive", completed.stdout)
         self.assertNotIn("sessions", completed.stdout)
+        self.assertNotIn("context", completed.stdout)
         self.assertNotIn("run an agent loop", completed.stdout)
 
     def test_tools_command_lists_registered_tools(self) -> None:
@@ -252,6 +253,35 @@ class CliIntegrationTest(TestCase):
         self.assertIn("session: integration-session", completed.stdout)
         self.assertIn(f"project: {ROOT.resolve()}", completed.stdout)
 
+    def test_context_slash_command_dumps_request_without_creating_turn(self) -> None:
+        session_dir = SESSION_DIR / "context"
+        shutil.rmtree(session_dir, ignore_errors=True)
+        store = SessionStore(session_dir)
+        input_items = [{"role": "developer", "content": [{"type": "input_text", "text": "rules"}]}]
+        store.create(
+            project_root=ROOT,
+            workspace_root=ROOT.parent,
+            shell_default_workdir=ROOT,
+            input_items=input_items,
+            session_id="integration-context-session",
+        )
+
+        completed = self.run_cli(
+            "resume",
+            "integration-context-session",
+            input_text="/context\n/exit\n",
+            extra_env={"UNDERSTAND_AGENT_SESSION_DIR": str(session_dir)},
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = _first_json_object(completed.stdout)
+        self.assertEqual(list(payload), ["instructions", "tools", "input"])
+        self.assertEqual([tool["name"] for tool in payload["tools"]], ["shell"])
+        self.assertEqual(payload["input"], input_items)
+        loaded = store.load("integration-context-session")
+        self.assertEqual(loaded.input_items, input_items)
+        self.assertEqual(loaded.turns, [])
+
     def test_archive_and_unarchive_move_session_out_of_resume_set(self) -> None:
         session_dir = SESSION_DIR / "archive"
         shutil.rmtree(session_dir, ignore_errors=True)
@@ -313,3 +343,9 @@ class CliIntegrationTest(TestCase):
         )
 
         self.assertEqual(resumed_after_restore.returncode, 0, resumed_after_restore.stderr)
+
+
+def _first_json_object(text: str) -> dict:
+    start = text.index("{")
+    value, _ = json.JSONDecoder().raw_decode(text[start:])
+    return value
