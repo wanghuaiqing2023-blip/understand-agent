@@ -11,15 +11,15 @@ from understand_agent.registry import ToolRegistry
 
 MODEL_INSTRUCTIONS = """You are understand-agent, a local coding and research agent running on the user's Windows machine.
 
-Use the available tools when you need facts from the local filesystem or command execution. Do not guess when a tool can answer the question. After each tool observation, continue reasoning from the updated context and either request another tool action or provide a final answer.
+Use shell commands when you need facts from the local filesystem or command execution. Do not guess when a shell command can answer the question. After each tool observation, continue reasoning from the updated context and either request another tool action or provide a final answer.
 
 Shell commands run only after explicit user approval. Do not assume a shell command has executed until you receive its tool observation."""
 
 
 PERMISSIONS_INSTRUCTIONS = """<permissions instructions>
-Filesystem tools may read files only under workspace_root.
+Only the shell tool is available. Use PowerShell commands such as Get-ChildItem, Get-Content, Select-String, Set-Content, and python when you need to inspect or change local files.
 
-The shell tool runs PowerShell commands on the host machine, not in a sandbox. The shell default working directory is the user's Windows home directory. Every shell command requires user approval before execution. If the user rejects a command, treat the rejection as an observation and continue if possible.
+The shell tool runs PowerShell commands on the host machine, not in a sandbox. The shell default working directory is shown in environment_context. Every shell command requires user approval before execution. If the user rejects a command, treat the rejection as an observation and continue if possible.
 </permissions instructions>"""
 
 
@@ -56,17 +56,32 @@ class ContextBuilder:
         object.__setattr__(self, "cwd", (self.cwd or self.shell_default_workdir).resolve())
 
     def build_initial_request(self, task: str, registry: ToolRegistry) -> ContextRequest:
-        input_items = [
-            _message("developer", PERMISSIONS_INSTRUCTIONS),
-            *self._agents_instructions_items(),
-            _message("user", self._environment_context()),
-            _message("user", task),
-        ]
+        input_items = self.append_user_turn(self.build_session_seed(), task)
+        return self.build_request_from_input(input_items, registry)
+
+    def build_request_from_input(
+        self,
+        input_items: list[dict[str, Any]],
+        registry: ToolRegistry,
+    ) -> ContextRequest:
         return ContextRequest(
             instructions=MODEL_INSTRUCTIONS,
             tools=tools_for_responses_api(registry),
-            input=input_items,
+            input=deepcopy(input_items),
         )
+
+    def build_session_seed(self) -> list[dict[str, Any]]:
+        return [
+            _message("developer", PERMISSIONS_INSTRUCTIONS),
+            *self._agents_instructions_items(),
+        ]
+
+    def append_user_turn(self, input_items: list[dict[str, Any]], task: str) -> list[dict[str, Any]]:
+        return [
+            *deepcopy(input_items),
+            _message("user", self._environment_context()),
+            _message("user", task),
+        ]
 
     def append_model_output(
         self,
@@ -87,6 +102,16 @@ class ContextBuilder:
                 "type": "function_call_output",
                 "call_id": call_id,
                 "output": output,
+            },
+        ]
+
+    def append_assistant_message(self, input_items: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+        return [
+            *deepcopy(input_items),
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text}],
             },
         ]
 

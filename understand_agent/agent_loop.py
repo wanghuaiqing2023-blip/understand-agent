@@ -24,8 +24,6 @@ class ToolAction:
 
 @dataclass(frozen=True)
 class AgentRunConfig:
-    max_model_calls: int = 8
-    max_tool_calls: int = 8
     model: str = MODEL_NAME
     reasoning_effort: str = REASONING_EFFORT
 
@@ -38,6 +36,7 @@ class AgentRunResult:
     model_calls: int
     tool_calls: int
     error: str | None = None
+    input_items: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +66,10 @@ class AgentLoop:
         self.config = config or AgentRunConfig()
 
     def run(self, task: str) -> AgentRunResult:
+        request = self.context_builder.build_initial_request(task, self.registry)
+        return self.run_with_input_items(request.input)
+
+    def run_with_input_items(self, input_items: list[dict[str, Any]]) -> AgentRunResult:
         logger = self.tool_context.logger
         if logger is not None:
             logger.record(
@@ -74,18 +77,16 @@ class AgentLoop:
                 {
                     "model": self.config.model,
                     "reasoning_effort": self.config.reasoning_effort,
-                    "max_model_calls": self.config.max_model_calls,
-                    "max_tool_calls": self.config.max_tool_calls,
                 },
             )
 
-        request = self.context_builder.build_initial_request(task, self.registry)
-        input_items = deepcopy(request.input)
+        request = self.context_builder.build_request_from_input(input_items, self.registry)
+        current_input_items = deepcopy(request.input)
         if logger is not None:
             logger.record(
                 "context_built",
                 {
-                    "input_count": len(input_items),
+                    "input_count": len(current_input_items),
                     "tool_names": [tool["name"] for tool in request.tools],
                 },
             )
@@ -94,9 +95,6 @@ class AgentLoop:
         tool_calls = 0
 
         while True:
-            if model_calls >= self.config.max_model_calls:
-                return self._finish(False, "failed", None, model_calls, tool_calls, "max_model_calls exceeded")
-
             model_calls += 1
             if logger is not None:
                 logger.record(
@@ -104,14 +102,14 @@ class AgentLoop:
                     {
                         "model": self.config.model,
                         "model_call_index": model_calls,
-                        "input_count": len(input_items),
+                        "input_count": len(current_input_items),
                     },
                 )
             try:
                 response = self.model_client.create_response(
                     instructions=request.instructions,
                     tools=request.tools,
-                    input_items=input_items,
+                    input_items=current_input_items,
                 )
             except ModelClientError as exc:
                 failed_model_calls = (
@@ -130,7 +128,15 @@ class AgentLoop:
                             "error": str(exc),
                         },
                     )
-                return self._finish(False, "failed", None, failed_model_calls, tool_calls, str(exc))
+                return self._finish(
+                    False,
+                    "failed",
+                    None,
+                    failed_model_calls,
+                    tool_calls,
+                    str(exc),
+                    current_input_items,
+                )
 
             if logger is not None:
                 logger.record(
@@ -143,11 +149,11 @@ class AgentLoop:
                     },
                 )
 
-            input_items = self.context_builder.append_model_output(input_items, response.output)
+            current_input_items = self.context_builder.append_model_output(current_input_items, response.output)
             if logger is not None:
                 logger.record(
                     "model_output_appended",
-                    {"model_call_index": model_calls, "input_count": len(input_items)},
+                    {"model_call_index": model_calls, "input_count": len(current_input_items)},
                 )
 
             unsupported = find_unsupported_tool_action(response.output)
@@ -155,7 +161,7 @@ class AgentLoop:
                 error = f"unsupported tool action type: {unsupported.get('type')}"
                 if logger is not None:
                     logger.record("unsupported_tool_action", {"item": unsupported, "error": error})
-                return self._finish(False, "failed", None, model_calls, tool_calls, error)
+                return self._finish(False, "failed", None, model_calls, tool_calls, error, current_input_items)
 
             actions = extract_tool_actions(response.output)
             if logger is not None:
@@ -166,13 +172,11 @@ class AgentLoop:
 
             if actions:
                 for action in actions:
-                    if tool_calls >= self.config.max_tool_calls:
-                        return self._finish(False, "failed", None, model_calls, tool_calls, "max_tool_calls exceeded")
                     tool_calls += 1
                     result = execute_tool_action(action, self.registry, self.tool_context)
                     output = json.dumps(result.to_dict(), ensure_ascii=False)
-                    input_items = self.context_builder.append_tool_observation(
-                        input_items,
+                    current_input_items = self.context_builder.append_tool_observation(
+                        current_input_items,
                         action.call_id,
                         output,
                     )
@@ -182,7 +186,7 @@ class AgentLoop:
                             {
                                 "call_id": action.call_id,
                                 "tool_name": action.name,
-                                "input_count": len(input_items),
+                                "input_count": len(current_input_items),
                                 "result": result.to_dict(),
                             },
                         )
@@ -190,7 +194,12 @@ class AgentLoop:
 
             final_answer = extract_final_answer(response.raw, response.output_text)
             if final_answer:
-                return self._finish(True, "done", final_answer, model_calls, tool_calls, None)
+                if not response.output:
+                    current_input_items = self.context_builder.append_assistant_message(
+                        current_input_items,
+                        final_answer,
+                    )
+                return self._finish(True, "done", final_answer, model_calls, tool_calls, None, current_input_items)
             return self._finish(
                 False,
                 "failed",
@@ -198,6 +207,7 @@ class AgentLoop:
                 model_calls,
                 tool_calls,
                 "model returned no tool action and no final answer",
+                current_input_items,
             )
 
     def _finish(
@@ -208,6 +218,7 @@ class AgentLoop:
         model_calls: int,
         tool_calls: int,
         error: str | None,
+        input_items: list[dict[str, Any]] | None = None,
     ) -> AgentRunResult:
         result = AgentRunResult(
             ok=ok,
@@ -216,6 +227,7 @@ class AgentLoop:
             model_calls=model_calls,
             tool_calls=tool_calls,
             error=error,
+            input_items=deepcopy(input_items) if input_items is not None else None,
         )
         if self.tool_context.logger is not None:
             self.tool_context.logger.record("agent_run_finished", result.to_dict())

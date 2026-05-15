@@ -42,13 +42,13 @@
 | --- | --- | --- | --- |
 | R-001 | 用户输入一个任务 | planned | 初始入口可以是 CLI |
 | R-002 | 智能体生成简短计划 | planned | 先支持文本计划 |
-| R-003 | 智能体读取当前目录文件 | done | v0.1-alpha 已实现 `read_file` 只读工具，限制工作区边界 |
-| R-004 | 智能体搜索代码或文本 | done | v0.1-alpha 已实现 `search_text` 只读工具 |
+| R-003 | 智能体读取当前目录文件 | done | 通过 `shell` 执行 `Get-Content` 等命令完成，不再保留独立 `read_file` 工具 |
+| R-004 | 智能体搜索代码或文本 | done | 通过 `shell` 执行 `Select-String` 等命令完成，不再保留独立 `search_text` 工具 |
 | R-005 | 智能体修改文件 | planned | 需要变更摘要 |
-| R-006 | 智能体运行命令 | planned | 需要安全确认机制 |
+| R-006 | 智能体运行命令 | done | 已实现 `shell` 工具，主机 PowerShell 执行，执行前人工确认 |
 | R-007 | 智能体完成后输出总结 | planned | 总结结果、风险、验证情况 |
 | R-008 | 工具注册系统最小版 | done | 实现 `ToolSpec`、`ToolRegistry`、`ToolResult`、`ToolContext` |
-| R-009 | 只读工具集 | done | 实现 `list_files`、`read_file`、`search_text` |
+| R-009 | 只读工具集 | rejected | 自定义只读工具已被 shell-only 工具面取代，避免重复建设文件系统能力 |
 | R-010 | 工具展示与调用 CLI | done | 支持 `python -m understand_agent tools` 和 `call` |
 | R-011 | 自动化单元测试与集成测试 | done | 使用标准库 `unittest`，统一命令为 `python -m unittest discover -s tests` |
 | R-012 | GitHub Actions 自动测试 | done | push / PR 时运行 unittest |
@@ -56,9 +56,12 @@
 | R-014 | 工具调用失败归因证据 | done | 记录工具请求、开始、结束、耗时、完整结果和原始错误 |
 | R-015 | 执行结束后暴露 trace 日志位置 | done | CLI 在 stdout 输出 `run_id`，并在 stderr 输出本次 trace 文件路径 |
 | R-016 | 最近执行日志索引与查询命令 | done | 已提供 `index.jsonl`、`logs list` 和 `logs show <run_id>` |
-| R-017 | GPT-5.5 Agent Loop | done | 新增 `run` 命令，使用 OpenAI Responses API、本地 stateless context、工具行动和观察回填循环 |
+| R-017 | GPT-5.5 Agent Loop | done | 新增 `exec` 一次性命令，使用 OpenAI Responses API、本地 stateless context、工具行动和观察回填循环 |
 | R-018 | Codex 风格 context 拼接 | done | 请求分为 `instructions / tools / input`，初始 input 注入权限、AGENTS、环境和用户任务，历史保持 append-only |
 | R-019 | 主机 shell 工具 | done | 将 `shell` 暴露为模型可调用 function tool，主机 PowerShell 执行，执行前人工确认 |
+| R-020 | 可持续 session 上下文 | done | 默认 CLI 创建交互式 session；裸 prompt 会作为第一轮输入启动 session；完整 `input_items` 保存到 HOME 下 `.understand-agent/sessions` |
+| R-021 | Codex 风格 resume | done | 支持 `resume`、`resume --last`、`resume --all` 和 `resume <SESSION_ID>` |
+| R-022 | Session 归档与恢复 | done | 经用户明确允许新增 `archive <SESSION_ID>` 和 `unarchive <ARCHIVE_FILE_NAME>`，归档为 `<SESSION_ID>.gzip` 单文件并支持反悔恢复 |
 
 ## v0.2：任务工作流
 
@@ -69,7 +72,7 @@
 | R-103 | 操作日志 | done | v0.2-alpha 已实现本地 JSONL 执行轨迹 |
 | R-104 | 错误恢复 | idea | 失败后能解释和重试 |
 | R-105 | 简单记忆文件 | idea | 先用本地文件沉淀长期信息 |
-| R-106 | 模型工具循环停止条件 | done | 无 tool action 且有 final answer 时完成；预算耗尽、API 失败或未知 tool action 时失败 |
+| R-106 | 模型工具循环停止条件 | done | 无 tool action 且有 final answer 时完成；API 失败、无 final answer 或未知 tool action 时失败；不再设置调用次数预算 |
 
 ## v0.3：工程能力
 

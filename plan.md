@@ -24,25 +24,44 @@ The first version should be simple, direct, and close to the official loop shape
 
 ## CLI Interface
 
-Add:
+Codex-style commands:
 
 ```powershell
-python -m understand_agent run "<task>"
+python -m understand_agent
+python -m understand_agent "<task>"
+python -m understand_agent exec "<task>"
+python -m understand_agent resume
+python -m understand_agent resume --last
+python -m understand_agent resume --all
+python -m understand_agent resume --last --all
+python -m understand_agent resume <SESSION_ID>
+python -m understand_agent archive <SESSION_ID>
+python -m understand_agent unarchive <ARCHIVE_FILE_NAME>
 ```
 
-Supported options:
+`python -m understand_agent` starts a new interactive session. Each turn prints the final answer to stdout and the trace path to stderr.
 
-```powershell
---max-model-calls <int>
---max-tool-calls <int>
-```
+`python -m understand_agent "<task>"` starts a new interactive session, uses `<task>` as the first user turn, then keeps the session open for follow-up questions.
 
-Defaults:
+`exec` is the one-shot command. It replaces the removed `run` command and does not create or update a session.
+
+`resume` reads sessions from the user's HOME directory:
 
 ```text
-max_model_calls = 8
-max_tool_calls = 8
+C:\Users\27605\.understand-agent\sessions\
 ```
+
+`archive <SESSION_ID>` moves an active session into one gzip archive file:
+
+```text
+C:\Users\27605\.understand-agent\archived_sessions\<SESSION_ID>.gzip
+```
+
+The gzip file contains JSON with session data, session index entries, related trace logs, related log index entries, and a manifest.
+
+`unarchive <ARCHIVE_FILE_NAME>` restores an archived session back into the active session store and deletes the `.gzip` file after a successful restore.
+
+This command exists by explicit user permission. It is a local session management command, not a Codex CLI command.
 
 Do not add:
 
@@ -52,7 +71,7 @@ Do not add:
 --provider fake
 ```
 
-The `run` command should output JSON to stdout:
+The `exec` command should output JSON to stdout:
 
 ```json
 {
@@ -106,16 +125,13 @@ Use fixed base agent instructions that tell the model:
 
 ### tools
 
-Expose these tools to the model as function tools:
+Expose only this tool to the model as a function tool:
 
 ```text
-list_files
-read_file
-search_text
 shell
 ```
 
-Keep tool order stable.
+File listing, file reading, text search, file writing, and test execution are performed through shell commands.
 
 ### input
 
@@ -129,6 +145,8 @@ Initial input order must be:
 ```
 
 If `AGENTS.md` exists, inject it automatically. If it does not exist, skip it. Missing `AGENTS.md` must not fail the run.
+
+For interactive sessions, `AGENTS.md` is injected only when the session is created. Later turns append a fresh `environment_context` and the new user message, but they do not re-inject or rewrite the original project instructions.
 
 Use this environment model:
 
@@ -147,6 +165,8 @@ Use this environment model:
 The first implementation can generate `current_date` dynamically from local time, but the timezone label should be `Asia/Singapore`.
 
 ## Append-Only Loop History
+
+Session files save complete `input_items` in the user's HOME directory. A resumed session sends the saved history plus the new turn back to the stateless model.
 
 After each model response:
 
@@ -199,8 +219,6 @@ and a final answer can be extracted
 The loop fails when:
 
 - The model no longer requests a tool action but no final answer can be extracted.
-- `max_model_calls` is exceeded.
-- `max_tool_calls` is exceeded.
 - `OPENAI_API_KEY` is missing.
 - The OpenAI SDK call raises an exception.
 - The model returns an unsupported tool action type.
@@ -214,16 +232,16 @@ Use separate concepts:
 ```text
 workspace_root = C:\Users\27605
 project_root = C:\Users\27605\understand-agent
-shell_default_workdir = C:\Users\27605
+shell_default_workdir = C:\Users\27605\understand-agent
 ```
 
 Meaning:
 
-- `workspace_root`: root allowed for `list_files`, `read_file`, and `search_text`.
+- `workspace_root`: root used to reject shell workdirs outside the user's home tree.
 - `project_root`: the `understand-agent` project location, used for `AGENTS.md`, docs, tests, and project context.
 - `shell_default_workdir`: default shell execution directory.
 
-Paths outside `workspace_root` should be rejected by file tools.
+Resolved shell workdirs outside `workspace_root` should be rejected. Shell commands still run on the host machine, so user approval remains the main safety boundary.
 
 ## Shell Tool
 
@@ -234,7 +252,7 @@ Parameters:
 ```json
 {
   "command": "string, required",
-  "workdir": "string, optional, defaults to C:\\Users\\27605",
+  "workdir": "string, optional, defaults to C:\\Users\\27605\\understand-agent",
   "timeout_ms": "integer, optional, defaults to 30000"
 }
 ```
@@ -243,8 +261,8 @@ Behavior:
 
 - Execute commands in the host environment, not in a sandbox.
 - Use Windows PowerShell.
-- If `workdir` is omitted, use `C:\Users\27605`.
-- Resolve relative `workdir` paths against `C:\Users\27605`.
+- If `workdir` is omitted, use `C:\Users\27605\understand-agent`.
+- Resolve relative `workdir` paths against `C:\Users\27605\understand-agent`.
 - Reject final workdirs outside `C:\Users\27605`.
 - Before execution, show the resolved workdir and command to the user.
 - Only `y` or `yes` confirms execution.
@@ -346,8 +364,8 @@ Add strict append-history tests:
 
 Add shell tests:
 
-- Default workdir is `C:\Users\27605`.
-- Relative workdir resolves under Home.
+- Default workdir is `C:\Users\27605\understand-agent`.
+- Relative workdir resolves under the shell default workdir.
 - Workdir outside Home is rejected.
 - User confirmation `y` and `yes` execute.
 - Other input rejects.
@@ -358,7 +376,16 @@ Add OpenAI/client behavior tests:
 - Missing `OPENAI_API_KEY` returns JSON failure and does not call the API.
 - SDK exceptions are reported as run failures.
 - Unsupported tool action fails the run.
-- `max_model_calls` and `max_tool_calls` default to 8 and can be set from CLI.
+- No model/tool call-count CLI options exist in the first version.
+
+Add session tests:
+
+- Session files are stored under HOME `.understand-agent/sessions`.
+- `resume` filters by current `project_root`.
+- `resume --all` searches across projects.
+- `resume --last` selects the newest matching session.
+- `resume <SESSION_ID>` loads by id without depending on the current directory.
+- `exec` replaces `run`; `run` is no longer a valid command.
 
 Keep existing tests passing:
 

@@ -11,27 +11,50 @@ from understand_agent.agent_loop import AgentLoop, AgentRunConfig
 from understand_agent.context import ContextBuilder
 from understand_agent.model import OpenAIResponsesClient
 from understand_agent.registry import ToolContext, ToolResult
+from understand_agent.session import SessionRecord, SessionStore, turn_from_result
 from understand_agent.tools import build_default_registry
 from understand_agent.trace import ExecutionLogger, load_log_index, load_trace_events, new_run_id
 
 
+COMMAND_NAMES = {"tools", "call", "exec", "resume", "archive", "unarchive", "logs"}
+REMOVED_COMMAND_NAMES = {"run", "sessions"}
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    workspace_root = Path.cwd()
+    project_root = workspace_root.resolve()
+
+    if _looks_like_initial_prompt(raw_argv):
+        return _handle_new_session(project_root, initial_prompt=" ".join(raw_argv))
+
     parser = _build_parser()
     parsed = parser.parse_args(argv)
-    workspace_root = Path.cwd()
-    raw_argv = argv if argv is not None else sys.argv[1:]
-    logger = None if parsed.command == "logs" else _build_logger(workspace_root)
 
-    if logger is not None:
-        logger.record("run_started", {"argv": raw_argv})
-        logger.record("cli_args_received", vars(parsed))
+    if parsed.command is None:
+        return _handle_new_session(project_root)
+
+    if parsed.command == "logs":
+        return _handle_logs_command(parsed, workspace_root)
+
+    if parsed.command == "resume":
+        return _handle_resume_command(parsed, project_root)
+
+    if parsed.command == "archive":
+        return _handle_archive_command(parsed)
+
+    if parsed.command == "unarchive":
+        return _handle_unarchive_command(parsed)
+
+    logger = _build_logger(workspace_root)
+    logger.record("run_started", {"argv": raw_argv})
+    logger.record("cli_args_received", vars(parsed))
 
     registry = build_default_registry()
-    if logger is not None:
-        logger.record(
-            "registry_loaded",
-            {"tools": registry.list_tools()},
-        )
+    logger.record(
+        "registry_loaded",
+        {"tools": registry.list_tools()},
+    )
     context = ToolContext(
         workspace_root=workspace_root,
         project_root=workspace_root,
@@ -67,15 +90,12 @@ def main(argv: list[str] | None = None) -> int:
         _record_run_finished(logger, exit_code, raw_argv, workspace_root)
         return exit_code
 
-    if parsed.command == "run":
-        result = _handle_run_command(parsed, registry, logger)
+    if parsed.command == "exec":
+        result = _handle_exec_command(parsed, registry, logger, project_root)
         _print_json(_with_run_id(result.to_dict(), logger))
         exit_code = 0 if result.ok else 1
         _record_run_finished(logger, exit_code, raw_argv, workspace_root)
         return exit_code
-
-    if parsed.command == "logs":
-        return _handle_logs_command(parsed, workspace_root)
 
     parser.print_help()
     _record_run_finished(logger, 2, raw_argv, workspace_root)
@@ -92,10 +112,19 @@ def _build_parser() -> argparse.ArgumentParser:
     call_parser.add_argument("tool_name")
     call_parser.add_argument("tool_args", nargs="*", help="tool args in key=value form")
 
-    run_parser = subcommands.add_parser("run", help="run an agent loop for a task")
-    run_parser.add_argument("task")
-    run_parser.add_argument("--max-model-calls", type=int, default=8)
-    run_parser.add_argument("--max-tool-calls", type=int, default=8)
+    exec_parser = subcommands.add_parser("exec", help="run a one-shot agent task")
+    exec_parser.add_argument("task")
+
+    resume_parser = subcommands.add_parser("resume", help="resume an interactive session")
+    resume_parser.add_argument("session_id", nargs="?")
+    resume_parser.add_argument("--last", action="store_true")
+    resume_parser.add_argument("--all", action="store_true", dest="include_all")
+
+    archive_parser = subcommands.add_parser("archive", help="archive a stored session")
+    archive_parser.add_argument("session_id")
+
+    unarchive_parser = subcommands.add_parser("unarchive", help="restore an archived session")
+    unarchive_parser.add_argument("archive_file_name")
 
     logs_parser = subcommands.add_parser("logs", help="list or show execution logs")
     logs_subcommands = logs_parser.add_subparsers(dest="logs_command")
@@ -107,6 +136,17 @@ def _build_parser() -> argparse.ArgumentParser:
     show_parser.add_argument("run_id")
 
     return parser
+
+
+def _looks_like_initial_prompt(args: list[str]) -> bool:
+    if not args:
+        return False
+    first = args[0]
+    if first.startswith("-"):
+        return False
+    if first in COMMAND_NAMES or first in REMOVED_COMMAND_NAMES:
+        return False
+    return True
 
 
 def _parse_key_values(items: list[str]) -> ToolResult:
@@ -169,37 +209,208 @@ def _handle_logs_command(parsed: argparse.Namespace, workspace_root: Path) -> in
     return 2
 
 
-def _handle_run_command(
+def _handle_exec_command(
     parsed: argparse.Namespace,
     registry,
     logger: ExecutionLogger | None,
+    project_root: Path,
 ):
-    project_root = Path.cwd().resolve()
+    loop = _build_agent_loop(project_root, registry, logger)
+    return loop.run(parsed.task)
+
+
+def _handle_new_session(project_root: Path, initial_prompt: str | None = None) -> int:
+    registry = build_default_registry()
+    builder = _build_context_builder(project_root)
+    store = SessionStore()
     home_root = Path.home().resolve()
-    context = ToolContext(
-        workspace_root=home_root,
+    record = store.create(
         project_root=project_root,
+        workspace_root=home_root,
         shell_default_workdir=project_root,
+        input_items=builder.build_session_seed(),
+    )
+    print(f"session: {record.session_id}")
+    current = record
+    if initial_prompt is not None:
+        current = _run_session_turn(current, store, registry, initial_prompt)
+    return _session_repl(current, store, registry)
+
+
+def _handle_resume_command(parsed: argparse.Namespace, project_root: Path) -> int:
+    store = SessionStore()
+    try:
+        if parsed.session_id:
+            record = store.load(parsed.session_id)
+        elif parsed.last:
+            summary = store.latest(project_root=project_root, include_all=parsed.include_all)
+            if summary is None:
+                _print_json(ToolResult.failure("no session found").to_dict())
+                return 1
+            record = store.load(summary.session_id)
+        else:
+            summaries = store.list_summaries(project_root=project_root, include_all=parsed.include_all)
+            if not summaries:
+                _print_json(ToolResult.failure("no session found").to_dict())
+                return 1
+            record = _select_session(store, summaries)
+            if record is None:
+                return 1
+    except FileNotFoundError as exc:
+        _print_json(ToolResult.failure(str(exc)).to_dict())
+        return 1
+
+    print(f"session: {record.session_id}")
+    print(f"project: {record.project_root}")
+    return _session_repl(record, store, build_default_registry())
+
+
+def _handle_archive_command(parsed: argparse.Namespace) -> int:
+    store = SessionStore()
+    try:
+        data = store.archive(parsed.session_id)
+    except (FileNotFoundError, FileExistsError) as exc:
+        _print_json(ToolResult.failure(str(exc)).to_dict())
+        return 1
+    _print_json(ToolResult.success(data).to_dict())
+    return 0
+
+
+def _handle_unarchive_command(parsed: argparse.Namespace) -> int:
+    store = SessionStore()
+    try:
+        data = store.restore_archived(parsed.archive_file_name)
+    except (FileNotFoundError, FileExistsError, OSError, json.JSONDecodeError) as exc:
+        _print_json(ToolResult.failure(str(exc)).to_dict())
+        return 1
+    _print_json(ToolResult.success(data).to_dict())
+    return 0
+
+
+def _session_repl(record: SessionRecord, store: SessionStore, registry) -> int:
+    current = record
+    while True:
+        try:
+            user_input = input("> ")
+        except EOFError:
+            print()
+            return 0
+        text = user_input.strip()
+        if not text:
+            continue
+        if text in {"/exit", "/quit"}:
+            return 0
+
+        current = _run_session_turn(current, store, registry, user_input)
+
+
+def _run_session_turn(record: SessionRecord, store: SessionStore, registry, user_input: str) -> SessionRecord:
+    project_root = Path(record.project_root)
+    builder = _build_context_builder(
+        project_root=project_root,
+        workspace_root=Path(record.workspace_root),
+        shell_default_workdir=Path(record.shell_default_workdir),
+    )
+    input_items = builder.append_user_turn(record.input_items, user_input)
+    logger = _build_logger(project_root)
+    logger.record("run_started", {"argv": ["session", record.session_id, user_input]})
+    logger.record(
+        "session_turn_started",
+        {"session_id": record.session_id, "user_input": user_input},
+    )
+    logger.record("registry_loaded", {"tools": registry.list_tools()})
+
+    loop = _build_agent_loop(project_root, registry, logger, builder=builder)
+    result = loop.run_with_input_items(input_items)
+    exit_code = 0 if result.ok else 1
+    _record_run_finished(logger, exit_code, ["session", record.session_id, user_input], project_root)
+
+    if result.ok and result.final_answer:
+        print(result.final_answer)
+    else:
+        _print_json(_with_run_id(result.to_dict(), logger))
+
+    if _should_save_session_turn(record, input_items, result):
+        return store.append_turn(
+            record,
+            input_items=result.input_items or input_items,
+            turn=turn_from_result(
+                run_id=logger.run_id,
+                user_input=user_input,
+                result=result,
+                trace_path=_trace_display_path(logger),
+            ),
+        )
+    return record
+
+
+def _should_save_session_turn(
+    record: SessionRecord,
+    turn_input_items: list[dict[str, Any]],
+    result,
+) -> bool:
+    if result.input_items is None:
+        return False
+    if result.ok:
+        return True
+    return len(result.input_items) > len(turn_input_items)
+
+
+def _select_session(store: SessionStore, summaries) -> SessionRecord | None:
+    for index, summary in enumerate(summaries, start=1):
+        label = summary.last_user_input or "(no turns)"
+        print(f"{index}. {summary.session_id} [{summary.project_root}] {label}")
+    try:
+        selected = input("Select session: ").strip()
+    except EOFError:
+        return None
+    try:
+        index = int(selected)
+    except ValueError:
+        _print_json(ToolResult.failure(f"invalid session selection: {selected}").to_dict())
+        return None
+    if index < 1 or index > len(summaries):
+        _print_json(ToolResult.failure(f"invalid session selection: {selected}").to_dict())
+        return None
+    return store.load(summaries[index - 1].session_id)
+
+
+def _build_agent_loop(
+    project_root: Path,
+    registry,
+    logger: ExecutionLogger | None,
+    builder: ContextBuilder | None = None,
+) -> AgentLoop:
+    context_builder = builder or _build_context_builder(project_root)
+    context = ToolContext(
+        workspace_root=context_builder.workspace_root,
+        project_root=context_builder.project_root,
+        shell_default_workdir=context_builder.shell_default_workdir,
         run_id=logger.run_id if logger is not None else None,
         logger=logger,
     )
-    builder = ContextBuilder(
-        workspace_root=home_root,
-        project_root=project_root,
-        shell_default_workdir=project_root,
-        cwd=project_root,
-    )
-    loop = AgentLoop(
+    return AgentLoop(
         model_client=OpenAIResponsesClient(),
         registry=registry,
-        context_builder=builder,
+        context_builder=context_builder,
         tool_context=context,
-        config=AgentRunConfig(
-            max_model_calls=parsed.max_model_calls,
-            max_tool_calls=parsed.max_tool_calls,
-        ),
+        config=AgentRunConfig(),
     )
-    return loop.run(parsed.task)
+
+
+def _build_context_builder(
+    project_root: Path,
+    workspace_root: Path | None = None,
+    shell_default_workdir: Path | None = None,
+) -> ContextBuilder:
+    home_root = (workspace_root or Path.home()).resolve()
+    shell_root = (shell_default_workdir or project_root).resolve()
+    return ContextBuilder(
+        workspace_root=home_root,
+        project_root=project_root,
+        shell_default_workdir=shell_root,
+        cwd=project_root,
+    )
 
 
 def _active_log_dir(workspace_root: Path) -> Path:
@@ -222,8 +433,12 @@ def _record_run_finished(
 
 
 def _print_trace_path(logger: ExecutionLogger) -> None:
+    print(f"trace: {_trace_display_path(logger)}", file=sys.stderr)
+
+
+def _trace_display_path(logger: ExecutionLogger) -> str:
     try:
         display_path = logger.log_path.relative_to(Path.cwd()).as_posix()
     except ValueError:
         display_path = str(logger.log_path)
-    print(f"trace: {display_path}", file=sys.stderr)
+    return display_path

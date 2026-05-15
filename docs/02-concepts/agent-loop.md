@@ -69,8 +69,6 @@ ToolObservation
 
 ```text
 无 tool action 但无 final answer
-超过模型调用预算
-超过工具调用预算
 API key 缺失
 API 调用失败
 未知 tool action

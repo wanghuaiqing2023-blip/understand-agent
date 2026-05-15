@@ -32,7 +32,7 @@ class ContextBuilderTest(TestCase):
         self.assertIn("local coding and research agent", payload["instructions"])
         self.assertEqual(
             [tool["name"] for tool in payload["tools"]],
-            ["list_files", "read_file", "search_text", "shell"],
+            ["shell"],
         )
         self.assertEqual([item["role"] for item in payload["input"]], ["developer", "user", "user", "user"])
         self.assertIn("<permissions instructions>", _text(payload["input"][0]))
@@ -57,6 +57,42 @@ class ContextBuilderTest(TestCase):
         self.assertEqual([item["role"] for item in request.input], ["developer", "user", "user"])
         self.assertIn("<environment_context>", _text(request.input[1]))
         self.assertEqual(_text(request.input[2]), "Task.")
+
+    def test_session_seed_contains_permissions_and_agents_only(self) -> None:
+        tmp = _new_tmp_dir()
+        project_root = tmp / "understand-agent"
+        project_root.mkdir()
+        (project_root / "AGENTS.md").write_text("Project rule.", encoding="utf-8")
+        builder = ContextBuilder(
+            workspace_root=tmp,
+            project_root=project_root,
+            shell_default_workdir=tmp,
+            cwd=project_root,
+        )
+
+        seed = builder.build_session_seed()
+
+        self.assertEqual([item["role"] for item in seed], ["developer", "user"])
+        self.assertIn("<permissions instructions>", _text(seed[0]))
+        self.assertIn("Project rule.", _text(seed[1]))
+        self.assertNotIn("<environment_context>", "\n".join(_text(item) for item in seed))
+
+    def test_append_user_turn_adds_environment_then_user_message(self) -> None:
+        builder = _builder()
+        seed = [{"role": "developer", "content": [{"type": "input_text", "text": "rules"}]}]
+
+        updated = builder.append_user_turn(seed, "Next task.")
+
+        self.assertEqual(seed, updated[: len(seed)])
+        self.assertIn("<environment_context>", _text(updated[-2]))
+        self.assertEqual(_text(updated[-1]), "Next task.")
+
+    def test_default_registry_exposes_only_shell_schema(self) -> None:
+        builder = _builder()
+
+        request = builder.build_initial_request("Task.", build_default_registry())
+
+        self.assertEqual([tool["name"] for tool in request.tools], ["shell"])
 
     def test_environment_context_contains_runtime_roots_and_timezone(self) -> None:
         workspace_root = _new_tmp_dir()
@@ -86,8 +122,8 @@ class ContextBuilderTest(TestCase):
         function_call = {
             "type": "function_call",
             "call_id": "call_1",
-            "name": "read_file",
-            "arguments": json.dumps({"path": "understand-agent/AGENTS.md"}),
+            "name": "shell",
+            "arguments": json.dumps({"command": "Get-Content AGENTS.md"}),
         }
 
         after_model = builder.append_model_output(old_input, [function_call])
@@ -104,8 +140,8 @@ class ContextBuilderTest(TestCase):
         builder = _builder()
         old_input = [{"role": "user", "content": [{"type": "input_text", "text": "Task"}]}]
         calls = [
-            {"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{}"},
-            {"type": "function_call", "call_id": "call_2", "name": "search_text", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_2", "name": "shell", "arguments": "{}"},
         ]
 
         after_model = builder.append_model_output(old_input, calls)
@@ -126,6 +162,17 @@ class ContextBuilderTest(TestCase):
 
         self.assertEqual(old_input, old_copy)
 
+    def test_append_assistant_message_preserves_prefix(self) -> None:
+        builder = _builder()
+        old_input = [{"role": "user", "content": [{"type": "input_text", "text": "Task"}]}]
+
+        updated = builder.append_assistant_message(old_input, "Done.")
+
+        self.assertEqual(updated[: len(old_input)], old_input)
+        self.assertEqual(updated[-1]["type"], "message")
+        self.assertEqual(updated[-1]["role"], "assistant")
+        self.assertEqual(updated[-1]["content"][0]["text"], "Done.")
+
     def test_sanitize_model_output_removes_proxy_unsupported_status(self) -> None:
         items = [
             {
@@ -139,8 +186,8 @@ class ContextBuilderTest(TestCase):
                 "type": "function_call",
                 "id": "fc_1",
                 "call_id": "call_1",
-                "name": "list_files",
-                "arguments": '{"path":"."}',
+                "name": "shell",
+                "arguments": '{"command":"Get-ChildItem"}',
                 "status": "completed",
             },
             {
@@ -167,8 +214,8 @@ class ContextBuilderTest(TestCase):
             {
                 "type": "function_call",
                 "call_id": "call_1",
-                "name": "list_files",
-                "arguments": '{"path":"."}',
+                "name": "shell",
+                "arguments": '{"command":"Get-ChildItem"}',
             },
         )
         self.assertEqual(

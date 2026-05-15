@@ -4,7 +4,6 @@ from unittest import TestCase
 
 from understand_agent.agent_loop import (
     AgentLoop,
-    AgentRunConfig,
     execute_tool_action,
     extract_final_answer,
     extract_tool_actions,
@@ -22,15 +21,15 @@ class AgentLoopTest(TestCase):
                 {
                     "type": "function_call",
                     "call_id": "call_1",
-                    "name": "read_file",
-                    "arguments": '{"path":"README.md"}',
+                    "name": "shell",
+                    "arguments": '{"command":"Get-Content README.md"}',
                 }
             ]
         )
 
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0].call_id, "call_1")
-        self.assertEqual(actions[0].name, "read_file")
+        self.assertEqual(actions[0].name, "shell")
 
     def test_find_unsupported_tool_action(self) -> None:
         unsupported = find_unsupported_tool_action([{"type": "web_search_call", "id": "ws_1"}])
@@ -39,7 +38,7 @@ class AgentLoopTest(TestCase):
 
     def test_bad_arguments_become_tool_result_error(self) -> None:
         action = extract_tool_actions(
-            [{"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{bad json"}]
+            [{"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{bad json"}]
         )[0]
 
         result = execute_tool_action(action, ToolRegistry(), ToolContext(workspace_root=Path.cwd()))
@@ -84,6 +83,9 @@ class AgentLoopTest(TestCase):
         self.assertEqual(result.final_answer, "Done.")
         self.assertEqual(result.model_calls, 1)
         self.assertEqual(result.tool_calls, 0)
+        self.assertIsNotNone(result.input_items)
+        self.assertEqual(result.input_items[-1]["role"], "assistant")
+        self.assertEqual(result.input_items[-1]["content"][0]["text"], "Done.")
 
     def test_loop_executes_tool_and_continues_to_final_answer(self) -> None:
         loop = _loop(
@@ -110,6 +112,49 @@ class AgentLoopTest(TestCase):
         self.assertEqual(result.model_calls, 2)
         self.assertEqual(result.tool_calls, 1)
         self.assertEqual(result.final_answer, "Observed hello.")
+        self.assertIsNotNone(result.input_items)
+        self.assertEqual(result.input_items[-2]["type"], "function_call_output")
+        self.assertEqual(result.input_items[-1]["role"], "assistant")
+
+    def test_default_loop_has_no_eight_call_cap(self) -> None:
+        responses = [
+            ModelResponse(
+                output=[
+                    {
+                        "type": "function_call",
+                        "call_id": f"call_{index}",
+                        "name": "echo",
+                        "arguments": f'{{"value":"{index}"}}',
+                    }
+                ],
+                output_text=None,
+                raw={"output": []},
+            )
+            for index in range(9)
+        ]
+        responses.append(ModelResponse(output=[], output_text="Done after many calls.", raw={"output": []}))
+        loop = _loop(responses)
+
+        result = loop.run("Use many calls.")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.model_calls, 10)
+        self.assertEqual(result.tool_calls, 9)
+        self.assertEqual(result.final_answer, "Done after many calls.")
+
+    def test_loop_continues_from_existing_input_items(self) -> None:
+        root = Path.cwd()
+        builder = ContextBuilder(workspace_root=root, project_root=root, shell_default_workdir=root)
+        existing = [{"role": "user", "content": [{"type": "input_text", "text": "Earlier"}]}]
+        turn_input = builder.append_user_turn(existing, "Continue.")
+        loop = _loop([ModelResponse(output=[], output_text="Continued.", raw={"output": []})])
+
+        result = loop.run_with_input_items(turn_input)
+
+        self.assertTrue(result.ok)
+        self.assertIsNotNone(result.input_items)
+        self.assertEqual(result.input_items[: len(turn_input)], turn_input)
+        self.assertEqual(result.input_items[-1]["content"][0]["text"], "Continued.")
 
     def test_loop_fails_on_unsupported_tool_action(self) -> None:
         loop = _loop([ModelResponse(output=[{"type": "web_search_call"}], output_text=None, raw={"output": []})])
@@ -126,55 +171,6 @@ class AgentLoopTest(TestCase):
 
         self.assertFalse(result.ok)
         self.assertIn("boom", result.error or "")
-
-    def test_loop_enforces_model_call_budget(self) -> None:
-        loop = _loop(
-            [
-                ModelResponse(
-                    output=[
-                        {
-                            "type": "function_call",
-                            "call_id": "call_1",
-                            "name": "echo",
-                            "arguments": '{"value":"hello"}',
-                        }
-                    ],
-                    output_text=None,
-                    raw={"output": []},
-                ),
-                ModelResponse(output=[], output_text="Too late.", raw={"output": []}),
-            ],
-            config=AgentRunConfig(max_model_calls=1, max_tool_calls=8),
-        )
-
-        result = loop.run("Task.")
-
-        self.assertFalse(result.ok)
-        self.assertEqual(result.error, "max_model_calls exceeded")
-
-    def test_loop_enforces_tool_call_budget(self) -> None:
-        loop = _loop(
-            [
-                ModelResponse(
-                    output=[
-                        {
-                            "type": "function_call",
-                            "call_id": "call_1",
-                            "name": "echo",
-                            "arguments": '{"value":"hello"}',
-                        }
-                    ],
-                    output_text=None,
-                    raw={"output": []},
-                )
-            ],
-            config=AgentRunConfig(max_model_calls=8, max_tool_calls=0),
-        )
-
-        result = loop.run("Task.")
-
-        self.assertFalse(result.ok)
-        self.assertEqual(result.error, "max_tool_calls exceeded")
 
 
 class _Client:
@@ -196,7 +192,6 @@ class _FailingClient:
 def _loop(
     responses: list[ModelResponse],
     client=None,
-    config: AgentRunConfig | None = None,
 ) -> AgentLoop:
     registry = ToolRegistry()
     registry.register(
@@ -219,5 +214,4 @@ def _loop(
         registry=registry,
         context_builder=ContextBuilder(workspace_root=root, project_root=root, shell_default_workdir=root),
         tool_context=ToolContext(workspace_root=root),
-        config=config,
     )

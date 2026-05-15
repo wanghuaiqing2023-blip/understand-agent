@@ -12,7 +12,7 @@ accepted
 
 ## 决策
 
-实现 `python -m understand_agent run "<task>"`：
+实现 `python -m understand_agent exec "<task>"`：
 
 - 使用 OpenAI 官方 Python SDK。
 - 固定模型为 `gpt-5.5`。
@@ -21,9 +21,9 @@ accepted
 - 使用 Responses API 的 `instructions / tools / input` 结构。
 - 本地维护完整 `input_items`，不使用 `previous_response_id`。
 - 服务端按 stateless 假设处理。
-- 暴露 `list_files / read_file / search_text / shell` 为 function tools。
+- 暴露 `shell` 为唯一 function tool；文件读取、搜索和写入由 PowerShell 命令完成。
 - `shell` 在主机 PowerShell 中执行，每次执行前要求用户确认。
-- `max_model_calls` 和 `max_tool_calls` 默认 8，可在 CLI 设置。
+- 不提供 `max_model_calls` 和 `max_tool_calls` 参数；循环不使用调用次数预算作为停止条件。
 
 ## 原因
 
@@ -37,7 +37,7 @@ accepted
 
 ## 后果
 
-`run` 命令需要 `OPENAI_API_KEY`。缺失 key 或 API 调用失败时，系统直接返回真实错误，不自动重试、不 fallback。
+`exec` 命令需要 `OPENAI_API_KEY`。缺失 key 或 API 调用失败时，系统直接返回真实错误，不自动重试、不 fallback。
 
 shell 在主机环境执行，可能访问 Home 目录下的真实文件和命令，因此必须保留确认机制和 trace 记录。
 
